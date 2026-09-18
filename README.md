@@ -25,10 +25,10 @@ Restart Gray, then:
 from chosen opacity to transparent in that direction. Original image alpha is
 preserved. A one-row image uses uniform opacity.
 
-**Publication status:** the Rust implementation, installer and release workflow
-are local. No remote repo or GitHub release has been published yet. The default
-public command cannot download until that release exists and the updated Gray
-binary is installed. Do not mistake local mirror tests for a published release.
+**Publication status:** source is public at `vstaln/gray-background`. The `v0.1.0`
+release assets are not published yet, so the default public command cannot
+download until that release exists and the updated Gray binary is installed.
+Do not mistake local mirror tests for a published release.
 
 ## How installation works
 
