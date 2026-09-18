@@ -25,10 +25,8 @@ Restart Gray, then:
 from chosen opacity to transparent in that direction. Original image alpha is
 preserved. A one-row image uses uniform opacity.
 
-**Publication status:** source is public at `vstaln/gray-background`. The `v0.1.0`
-release assets are not published yet, so the default public command cannot
-download until that release exists and the updated Gray binary is installed.
-Do not mistake local mirror tests for a published release.
+**Publication status:** source and `v0.1.0` release assets are published at
+[`vstaln/gray-background`](https://github.com/vstaln/gray-background).
 
 ## How installation works
 
