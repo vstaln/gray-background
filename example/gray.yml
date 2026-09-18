@@ -1,0 +1,4 @@
+# Development only. Installed users need no gray.yml.
+plugins:
+  - builtin: tools-minimal
+  - sidecar: ~/grayplugins/gray-background/target/release/background
