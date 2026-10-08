@@ -1,4 +1,13 @@
-# Gray Background
+<p align="center">
+  <img src="assets/gray-logo.svg" alt="gray" width="96">
+</p>
+<h1 align="center">gray-background</h1>
+<p align="center">Set an image — with opacity and gradient fade — as your gray terminal background.</p>
+<p align="center">
+  <a href="https://github.com/vstaln/gray-background/blob/main/LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="gray plugin" src="https://img.shields.io/badge/gray-plugin-7aa2f7.svg">
+  <img alt="rust" src="https://img.shields.io/badge/built%20with-rust-orange.svg">
+</p>
 
 A **standalone Rust binary** plugin. No Python, virtual environment, Cargo, or
 project YAML is needed on user machines. Gray still owns terminal rendering;
@@ -98,3 +107,7 @@ All matrix builds must succeed before publication. Tag must match Cargo version.
 The Gray catalog pins v0.1.0 at `vstaln/gray-background`; publishing/new tags and
 Gray's catalog/version changes are explicit release operations, not install-time
 build steps. Cross-platform workflow execution has not yet occurred.
+
+---
+Part of the [gray](https://github.com/vstaln/gray) plugin ecosystem —
+the open-source AI agent harness. <https://gray.alignment.id>
