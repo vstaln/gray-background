@@ -261,6 +261,10 @@ fn serve() -> Result<()> {
                 Err(error) if error.is::<Closed>() => return Err(error),
                 Err(error) => json!({"text":format!("Error: {error:#}")}),
             },
+            "tool/call" => {
+                let name = request["params"]["name"].as_str().unwrap_or("");
+                json!({"is_error":true,"content":format!("unknown tool: {name}")})
+            }
             _ => json!({"error":"unknown method"}),
         };
         wire.send(json!({"id":id,"result":result}))?;
@@ -278,6 +282,10 @@ fn main() -> Result<()> {
     }
     if args == ["--version"] {
         println!("background {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args == ["manifest"] {
+        println!("{}", manifest());
         return Ok(());
     }
     if !args.is_empty() {
