@@ -254,20 +254,20 @@ fn serve() -> Result<()> {
         let Some(method) = request["method"].as_str() else {
             continue;
         };
-        let result = match method {
-            "plugin/manifest" => manifest(),
+        let reply = match method {
+            "plugin/manifest" => json!({"id":id,"result":manifest()}),
             "command/run" => match command(&request["params"], &mut wire, &mut last) {
-                Ok(text) => json!({"text":text}),
+                Ok(text) => json!({"id":id,"result":{"text":text}}),
                 Err(error) if error.is::<Closed>() => return Err(error),
-                Err(error) => json!({"text":format!("Error: {error:#}")}),
+                Err(error) => json!({"id":id,"result":{"text":format!("Error: {error:#}")}}),
             },
             "tool/call" => {
                 let name = request["params"]["name"].as_str().unwrap_or("");
-                json!({"is_error":true,"content":format!("unknown tool: {name}")})
+                json!({"id":id,"result":{"is_error":true,"content":format!("unknown tool: {name}")}})
             }
-            _ => json!({"error":"unknown method"}),
+            _ => json!({"id":id,"error":{"code":-32601,"message":format!("method not found: {method}")}}),
         };
-        wire.send(json!({"id":id,"result":result}))?;
+        wire.send(reply)?;
     }
 }
 
