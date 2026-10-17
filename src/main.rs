@@ -225,7 +225,9 @@ fn command(params: &Value, wire: &mut Wire, last: &mut Option<PathBuf>) -> Resul
                 .get(1)
                 .unwrap_or(&"0.2")
                 .parse::<f64>()
-                .context("opacity must be a finite number between 0 and 1")?;
+                .with_context(|| {
+                    format!("opacity {:?} is not a number between 0 and 1", argv[1])
+                })?;
             let path = expanduser(Path::new(argv[0]))?;
             let png = prepare_png(&path, opacity, argv.get(2).unwrap_or(&"none"))?;
             let temp = tempfile::Builder::new()
