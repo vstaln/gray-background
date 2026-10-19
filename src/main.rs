@@ -5,14 +5,41 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const HELP: &str =
     "/background <image-path> [opacity 0..1] [none|top-to-bottom|bottom-to-top] | off | status";
 const MAX_FRAME: usize = 256 * 1024;
 static STOP: AtomicBool = AtomicBool::new(false);
+#[cfg(unix)]
 extern "C" fn stop(_: libc::c_int) {
     STOP.store(true, Ordering::Relaxed);
+}
+
+/// Stdin drained on a reader thread; `recv_timeout` keeps the same bounded
+/// STOP/deadline polling `libc::poll` gave (and works on Windows).
+fn spawn_stdin() -> mpsc::Receiver<std::io::Result<Vec<u8>>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut input = std::io::stdin();
+        let mut chunk = [0u8; 8192];
+        loop {
+            match input.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if tx.send(Ok(chunk[..n].to_vec())).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    break;
+                }
+            }
+        }
+    });
+    rx
 }
 
 #[derive(Debug)]
@@ -32,10 +59,10 @@ fn manifest() -> Value {
 fn expanduser(path: &Path) -> Result<PathBuf> {
     let text = path.to_string_lossy();
     if text == "~" || text.starts_with("~/") {
-        return Ok(
-            PathBuf::from(std::env::var_os("HOME").context("HOME is not set")?)
-                .join(text.strip_prefix("~/").unwrap_or("")),
-        );
+        let home = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .context("HOME is not set")?;
+        return Ok(PathBuf::from(home).join(text.strip_prefix("~/").unwrap_or("")));
     }
     Ok(path.to_path_buf())
 }
@@ -49,11 +76,16 @@ fn prepare_png(path: &Path, opacity: f64, gradient: &str) -> Result<Vec<u8>> {
         matches!(gradient, "none" | "top-to-bottom" | "bottom-to-top"),
         "gradient must be none, top-to-bottom, or bottom-to-top"
     );
-    use std::os::unix::fs::OpenOptionsExt;
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(expanduser(path)?)?;
+    #[cfg(unix)]
+    let file = {
+        use std::os::unix::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(expanduser(path)?)?
+    };
+    #[cfg(not(unix))]
+    let file = std::fs::File::open(expanduser(path)?)?;
     ensure!(
         file.metadata()?.is_file(),
         "background must be a regular file"
@@ -104,11 +136,21 @@ fn prepare_png(path: &Path, opacity: f64, gradient: &str) -> Result<Vec<u8>> {
     Ok(png.into_inner())
 }
 
-#[derive(Default)]
 struct Wire {
     bytes: Vec<u8>,
     pending: VecDeque<Value>,
     next_id: u64,
+    stdin: mpsc::Receiver<std::io::Result<Vec<u8>>>,
+}
+impl Default for Wire {
+    fn default() -> Self {
+        Self {
+            bytes: Vec::new(),
+            pending: VecDeque::new(),
+            next_id: 0,
+            stdin: spawn_stdin(),
+        }
+    }
 }
 impl Wire {
     fn read(&mut self, deadline: Option<Instant>) -> Result<Value> {
@@ -134,29 +176,12 @@ impl Wire {
                 continue;
             }
             ensure!(self.bytes.len() <= MAX_FRAME, "host frame exceeds 256 KiB");
-            let mut descriptor = libc::pollfd {
-                fd: libc::STDIN_FILENO,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // No reader thread: bounded polling also lets termination drop temporary files.
-            let ready = unsafe { libc::poll(&mut descriptor, 1, 100) };
-            if ready < 0 {
-                let error = std::io::Error::last_os_error();
-                if error.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error.into());
+            match self.stdin.recv_timeout(Duration::from_millis(100)) {
+                Ok(Ok(chunk)) => self.bytes.extend_from_slice(&chunk),
+                Ok(Err(e)) => return Err(e.into()),
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(Closed.into()),
             }
-            if ready == 0 {
-                continue;
-            }
-            let mut chunk = [0; 8192];
-            let size = std::io::stdin().read(&mut chunk)?;
-            if size == 0 {
-                return Err(Closed.into());
-            }
-            self.bytes.extend_from_slice(&chunk[..size]);
         }
     }
 
@@ -291,6 +316,7 @@ fn main() -> Result<()> {
     if !args.is_empty() {
         bail!("unknown arguments; use --help");
     }
+    #[cfg(unix)]
     for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
         unsafe {
             libc::signal(sig, stop as *const () as libc::sighandler_t);
