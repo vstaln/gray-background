@@ -1,11 +1,20 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::Command;
+use std::sync::mpsc::Receiver;
 
-fn spawn() -> (
-    std::process::Child,
-    BufReader<std::process::ChildStdout>,
-    std::process::ChildStdin,
-) {
+// Replies come back on a dedicated reader thread: `recv_timeout` gives the
+// cross-platform read deadline that libc::poll only provides on unix.
+struct Replies(Receiver<serde_json::Value>);
+
+impl Replies {
+    fn next(&mut self) -> serde_json::Value {
+        self.0
+            .recv_timeout(std::time::Duration::from_secs(25))
+            .expect("plugin reply timed out")
+    }
+}
+
+fn spawn() -> (std::process::Child, Replies, std::process::ChildStdin) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_background"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -13,25 +22,23 @@ fn spawn() -> (
         .expect("spawn plugin");
     let stdout = child.stdout.take().expect("stdout");
     let stdin = child.stdin.take().expect("stdin");
-    (child, BufReader::new(stdout), stdin)
-}
-
-fn reply(reader: &mut BufReader<std::process::ChildStdout>) -> serde_json::Value {
-    if reader.buffer().is_empty() {
-        use std::os::fd::AsRawFd;
-        let mut descriptor = libc::pollfd {
-            fd: reader.get_ref().as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        assert!(
-            unsafe { libc::poll(&mut descriptor, 1, 25_000) } > 0,
-            "plugin reply timed out"
-        );
-    }
-    let mut line = String::new();
-    reader.read_line(&mut line).expect("reply line");
-    serde_json::from_str(&line).expect("valid reply JSON")
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {
+                    let value = serde_json::from_str(&line).expect("valid reply JSON");
+                    if tx.send(value).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    (child, Replies(rx), stdin)
 }
 
 fn send(stdin: &mut std::process::ChildStdin, value: &serde_json::Value) {
@@ -50,12 +57,12 @@ fn write_image(dir: &std::path::Path, height: u32) -> std::path::PathBuf {
 
 #[test]
 fn manifest_registers_background_command() {
-    let (mut child, mut reader, mut stdin) = spawn();
+    let (mut child, mut replies, mut stdin) = spawn();
     send(
         &mut stdin,
         &serde_json::json!({"id": 1, "method": "plugin/manifest"}),
     );
-    let manifest = reply(&mut reader)["result"].clone();
+    let manifest = replies.next()["result"].clone();
     assert_eq!(manifest["name"], "background");
     assert_eq!(manifest["commands"][0], "/background");
     assert_eq!(manifest["protocol"], "1.1");
@@ -69,20 +76,20 @@ fn manifest_registers_background_command() {
 
 #[test]
 fn off_sends_null_path_and_reports() {
-    let (mut child, mut reader, mut stdin) = spawn();
+    let (mut child, mut replies, mut stdin) = spawn();
     send(
         &mut stdin,
         &serde_json::json!({"id": 1, "method": "command/run",
         "params": {"name": "/background", "argv": ["off"]}}),
     );
-    let request = reply(&mut reader);
+    let request = replies.next();
     assert_eq!(request["method"], "host/background");
     assert_eq!(request["params"]["path"], serde_json::Value::Null);
     send(
         &mut stdin,
         &serde_json::json!({"id": request["id"], "result": {"ok": true}}),
     );
-    assert_eq!(reply(&mut reader)["result"]["text"], "Background off.");
+    assert_eq!(replies.next()["result"]["text"], "Background off.");
     send(
         &mut stdin,
         &serde_json::json!({"method": "plugin/shutdown"}),
@@ -94,13 +101,13 @@ fn off_sends_null_path_and_reports() {
 fn set_bakes_opacity_gradient_and_prepares_absolute_png() {
     let dir = tempfile::tempdir().unwrap();
     let source = write_image(dir.path(), 3);
-    let (mut child, mut reader, mut stdin) = spawn();
+    let (mut child, mut replies, mut stdin) = spawn();
     send(
         &mut stdin,
         &serde_json::json!({"id": 1, "method": "command/run",
         "params": {"name": "/background", "argv": [source, "0.5", "top-to-bottom"]}}),
     );
-    let request = reply(&mut reader);
+    let request = replies.next();
     assert_eq!(request["method"], "host/background");
     let prepared = std::path::PathBuf::from(request["params"]["path"].as_str().unwrap());
     assert!(prepared.is_absolute());
@@ -117,7 +124,7 @@ fn set_bakes_opacity_gradient_and_prepares_absolute_png() {
         &serde_json::json!({"id": request["id"], "result": {"ok": true}}),
     );
     assert_eq!(
-        reply(&mut reader)["result"]["text"],
+        replies.next()["result"]["text"],
         "Background set. /background off removes it."
     );
     assert!(
@@ -135,18 +142,18 @@ fn set_bakes_opacity_gradient_and_prepares_absolute_png() {
 fn host_errors_surface_and_invalid_requests_stay_local() {
     let dir = tempfile::tempdir().unwrap();
     let source = write_image(dir.path(), 1);
-    let (mut child, mut reader, mut stdin) = spawn();
+    let (mut child, mut replies, mut stdin) = spawn();
     send(
         &mut stdin,
         &serde_json::json!({"id": 1, "method": "command/run",
         "params": {"name": "/background", "argv": [source, "0.5"]}}),
     );
-    let request = reply(&mut reader);
+    let request = replies.next();
     send(
         &mut stdin,
         &serde_json::json!({"id": request["id"], "result": {"error": "boom"}}),
     );
-    assert_eq!(reply(&mut reader)["result"]["text"], "Error: boom");
+    assert_eq!(replies.next()["result"]["text"], "Error: boom");
     for argv in [
         serde_json::json!(["/definitely-missing.png"]),
         serde_json::json!(["/missing.png", "nan"]),
@@ -157,7 +164,7 @@ fn host_errors_surface_and_invalid_requests_stay_local() {
             &serde_json::json!({"id": 9, "method": "command/run",
             "params": {"name": "/background", "argv": argv}}),
         );
-        let text = reply(&mut reader)["result"]["text"]
+        let text = replies.next()["result"]["text"]
             .as_str()
             .unwrap()
             .to_string();
@@ -174,13 +181,13 @@ fn host_errors_surface_and_invalid_requests_stay_local() {
 fn manifest_requests_queue_behind_in_flight_background() {
     let dir = tempfile::tempdir().unwrap();
     let source = write_image(dir.path(), 1);
-    let (mut child, mut reader, mut stdin) = spawn();
+    let (mut child, mut replies, mut stdin) = spawn();
     send(
         &mut stdin,
         &serde_json::json!({"id": 1, "method": "command/run",
         "argv": {}, "params": {"name": "/background", "argv": [source, "0.2"]}}),
     );
-    let request = reply(&mut reader);
+    let request = replies.next();
     send(
         &mut stdin,
         &serde_json::json!({"id": 2, "method": "plugin/manifest"}),
@@ -190,10 +197,10 @@ fn manifest_requests_queue_behind_in_flight_background() {
         &serde_json::json!({"id": request["id"], "result": {"ok": true}}),
     );
     assert_eq!(
-        reply(&mut reader)["result"]["text"],
+        replies.next()["result"]["text"],
         "Background set. /background off removes it."
     );
-    assert_eq!(reply(&mut reader)["id"], 2);
+    assert_eq!(replies.next()["id"], 2);
     send(
         &mut stdin,
         &serde_json::json!({"method": "plugin/shutdown"}),
@@ -203,20 +210,27 @@ fn manifest_requests_queue_behind_in_flight_background() {
 
 #[test]
 fn shutdown_eof_and_sigterm_remove_pending_temp_image() {
-    for mode in ["shutdown", "eof", "sigterm"] {
+    // Windows has no SIGTERM: TerminateProcess gives no cleanup chance, so
+    // only the orderly exits are tested there.
+    #[cfg(unix)]
+    let modes = ["shutdown", "eof", "sigterm"];
+    #[cfg(not(unix))]
+    let modes = ["shutdown", "eof"];
+    for mode in modes {
         let dir = tempfile::tempdir().unwrap();
         let source = write_image(dir.path(), 1);
-        let (mut child, mut reader, mut stdin) = spawn();
+        let (mut child, mut replies, mut stdin) = spawn();
         send(
             &mut stdin,
             &serde_json::json!({"id":1,"method":"command/run",
             "params":{"name":"/background","argv":[source]}}),
         );
-        let request = reply(&mut reader);
+        let request = replies.next();
         let prepared = std::path::PathBuf::from(request["params"]["path"].as_str().unwrap());
         assert!(prepared.exists());
         match mode {
             "shutdown" => send(&mut stdin, &serde_json::json!({"method":"plugin/shutdown"})),
+            #[cfg(unix)]
             "sigterm" => unsafe {
                 libc::kill(child.id() as i32, libc::SIGTERM);
             },
@@ -242,16 +256,16 @@ fn shutdown_eof_and_sigterm_remove_pending_temp_image() {
 
 #[test]
 fn silent_host_times_out_and_plugin_recovers() {
-    let (mut child, mut reader, mut stdin) = spawn();
+    let (mut child, mut replies, mut stdin) = spawn();
     send(
         &mut stdin,
         &serde_json::json!({"id":1,"method":"command/run",
         "params":{"name":"/background","argv":["off"]}}),
     );
-    assert_eq!(reply(&mut reader)["method"], "host/background");
+    assert_eq!(replies.next()["method"], "host/background");
     let start = std::time::Instant::now();
     assert!(
-        reply(&mut reader)["result"]["text"]
+        replies.next()["result"]["text"]
             .as_str()
             .unwrap()
             .contains("timed out")
@@ -261,7 +275,7 @@ fn silent_host_times_out_and_plugin_recovers() {
         &mut stdin,
         &serde_json::json!({"id":2,"method":"plugin/manifest"}),
     );
-    assert_eq!(reply(&mut reader)["result"]["name"], "background");
+    assert_eq!(replies.next()["result"]["name"], "background");
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
