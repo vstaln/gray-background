@@ -1,6 +1,6 @@
 [package]
 name = "gray-background"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Image backgrounds for the gray TUI (sidecar plugin, wire v1)."
