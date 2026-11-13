@@ -26,7 +26,8 @@ impl std::error::Error for Closed {}
 
 fn manifest() -> Value {
     json!({"name":"background", "version":env!("CARGO_PKG_VERSION"), "protocol":"1.1",
-        "tools":[], "commands":["/background"], "hooks":[]})
+        "tools":[], "commands":["/background"],
+        "command_descriptions": {"/background": "set an image as the terminal background"}, "hooks":[]})
 }
 
 fn expanduser(path: &Path) -> Result<PathBuf> {
